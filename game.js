@@ -3,7 +3,7 @@
 
   const SIZE = 4;
   const BEST_KEY = "neon2048-best";
-  const MOVE_MS = 140;
+  const MOVE_MS = 150;
 
   const boardEl = document.getElementById("board");
   const gridBg = document.getElementById("gridBg");
@@ -44,34 +44,73 @@
     return Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
   }
 
+  function metrics() {
+    const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--gap")) || 12;
+    const boardW = boardEl.clientWidth - gap * 2;
+    const cell = (boardW - gap * (SIZE - 1)) / SIZE;
+    return { gap, cell, step: cell + gap };
+  }
 
+  function applyTileGeometry(el, r, c, m = metrics()) {
+    el.style.width = `${m.cell}px`;
+    el.style.height = `${m.cell}px`;
+    el.style.transform = `translate(${c * m.step}px, ${r * m.step}px)`;
+  }
+
+  function valueClass(v) {
+    return v >= 65536 ? "v65536" : `v${v}`;
+  }
 
   function createTileEl(tile, { spawn = false, pop = false } = {}) {
     const el = document.createElement("div");
-    const cls = tile.v >= 65536 ? "v65536" : `v${tile.v}`;
-    el.className = `tile ${cls}` + (spawn ? " spawn" : "") + (pop ? " pop" : "");
+    el.className = `tile ${valueClass(tile.v)}`;
     el.dataset.id = String(tile.id);
+    const inner = document.createElement("div");
+    inner.className = "tile-inner" + (spawn ? " spawn" : "") + (pop ? " pop" : "");
     const num = document.createElement("span");
     num.className = "num";
     num.textContent = String(tile.v);
-    el.appendChild(num);
+    inner.appendChild(num);
+    el.appendChild(inner);
+    // Set position BEFORE insert so the first paint is already correct (no 0,0 flash).
+    applyTileGeometry(el, tile.r, tile.c);
     tilesEl.appendChild(el);
     tileNodes.set(tile.id, el);
-    requestAnimationFrame(() => {
-      const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--gap")) || 12;
-      const boardW = boardEl.clientWidth - gap * 2;
-      const cell = (boardW - gap * (SIZE - 1)) / SIZE;
-      el.style.width = `${cell}px`;
-      el.style.height = `${cell}px`;
-      el.style.transform = `translate(${tile.c * (cell + gap)}px, ${tile.r * (cell + gap)}px)`;
-    });
+    if (spawn || pop) {
+      const clear = () => inner.classList.remove("spawn", "pop");
+      inner.addEventListener("animationend", clear, { once: true });
+      setTimeout(clear, 220);
+    }
     return el;
+  }
+
+  function syncTileEl(tile, { pop = false } = {}) {
+    let el = tileNodes.get(tile.id);
+    if (!el) {
+      createTileEl(tile, { pop });
+      return;
+    }
+    el.className = `tile ${valueClass(tile.v)}`;
+    const inner = el.querySelector(".tile-inner");
+    const num = el.querySelector(".num");
+    if (num) num.textContent = String(tile.v);
+    applyTileGeometry(el, tile.r, tile.c);
+    if (pop && inner) {
+      inner.classList.remove("spawn", "pop");
+      void inner.offsetWidth;
+      inner.classList.add("pop");
+      const clear = () => inner.classList.remove("pop");
+      inner.addEventListener("animationend", clear, { once: true });
+      setTimeout(clear, 220);
+    }
   }
 
   function rebuildFromGrid(spawnIds = new Set(), mergeIds = new Set()) {
     tilesEl.innerHTML = "";
     tileNodes.clear();
     tiles = [];
+    const m = metrics();
+    document.documentElement.style.setProperty("--cell-size", `${m.cell}px`);
     for (let r = 0; r < SIZE; r++) {
       for (let c = 0; c < SIZE; c++) {
         const v = grid[r][c];
@@ -112,7 +151,6 @@
     scoreDeltaEl.hidden = false;
     scoreDeltaEl.textContent = `+${n}`;
     scoreDeltaEl.style.animation = "none";
-    // reflow
     void scoreDeltaEl.offsetWidth;
     scoreDeltaEl.style.animation = "";
     clearTimeout(showScoreDelta._t);
@@ -170,7 +208,6 @@
     playTone(180, 0.18, "sawtooth");
   }
 
-  // Soft WebAudio feedback (optional / silent if blocked)
   let audioCtx = null;
   function ensureAudio() {
     if (audioCtx) return audioCtx;
@@ -199,21 +236,15 @@
     o.stop(now + dur + 0.02);
   }
 
-  /**
-   * Slide+merge one line toward the start (left/up).
-   * Returns { line, merges: [{from,to,value}], moved, gained }
-   */
   function slideLine(line) {
     const filtered = line.filter((v) => v !== 0);
     const out = [];
-    const merges = [];
     let gained = 0;
     let i = 0;
     while (i < filtered.length) {
       if (i + 1 < filtered.length && filtered[i] === filtered[i + 1]) {
         const val = filtered[i] * 2;
         out.push(val);
-        merges.push(val);
         gained += val;
         i += 2;
       } else {
@@ -223,12 +254,10 @@
     }
     while (out.length < SIZE) out.push(0);
     const moved = out.some((v, idx) => v !== line[idx]);
-    return { line: out, merges, moved, gained };
+    return { line: out, moved, gained };
   }
 
   function vectors(dir) {
-    // traverse order so we process from the "far" side first conceptually —
-    // we extract lines toward the destination edge.
     if (dir === "left") {
       return {
         getLine: (i) => grid[i].slice(),
@@ -252,7 +281,6 @@
         mapPos: (i, j) => ({ r: j, c: i }),
       };
     }
-    // down
     return {
       getLine: (i) => [grid[3][i], grid[2][i], grid[1][i], grid[0][i]],
       setLine: (i, line) => {
@@ -263,21 +291,71 @@
   }
 
   /**
-   * Animate by rebuilding after computing new positions from previous tiles.
-   * We track each tile id movement for CSS transform transitions.
+   * Track each occupied cell's tile id so we can animate existing DOM nodes.
+   * @returns {{id:number,r:number,c:number,v:number}[][]}
    */
+  function occupancyByCell() {
+    /** @type {({id:number,r:number,c:number,v:number}|null)[][]} */
+    const map = Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
+    for (const t of tiles) map[t.r][t.c] = t;
+    return map;
+  }
+
+  /**
+   * Plan which live tiles slide where, and which become merges.
+   * Returns moves for existing tiles + final tile list after move (before spawn).
+   */
+  function planMoves(dir) {
+    const meta = vectors(dir);
+    const occ = occupancyByCell();
+    /** @type {{tile:any, toR:number, toC:number, mergePartner?:any, isMergeResult?:boolean, newValue?:number}[]} */
+    const moves = [];
+    /** @type {{id:number, r:number, c:number, v:number, merged?:boolean}[]} */
+    const nextTiles = [];
+    const mergeMarks = new Set();
+
+    for (let i = 0; i < SIZE; i++) {
+      const sources = [];
+      for (let j = 0; j < SIZE; j++) {
+        const p = meta.mapPos(i, j);
+        const t = occ[p.r][p.c];
+        if (t) sources.push(t);
+      }
+
+      let idx = 0;
+      let outJ = 0;
+      while (idx < sources.length) {
+        const a = sources[idx];
+        const dest = meta.mapPos(i, outJ);
+        if (idx + 1 < sources.length && sources[idx + 1].v === a.v) {
+          const b = sources[idx + 1];
+          const newVal = a.v * 2;
+          // Both tiles slide to dest; a survives as merged result, b is removed after.
+          moves.push({ tile: a, toR: dest.r, toC: dest.c, mergePartner: b, isSurvivor: true, newValue: newVal });
+          moves.push({ tile: b, toR: dest.r, toC: dest.c, mergePartner: a, isSurvivor: false });
+          nextTiles.push({ id: a.id, r: dest.r, c: dest.c, v: newVal, merged: true });
+          mergeMarks.add(`${dest.r},${dest.c}`);
+          idx += 2;
+          outJ += 1;
+        } else {
+          moves.push({ tile: a, toR: dest.r, toC: dest.c, isSurvivor: true });
+          nextTiles.push({ id: a.id, r: dest.r, c: dest.c, v: a.v });
+          idx += 1;
+          outJ += 1;
+        }
+      }
+    }
+    return { moves, nextTiles, mergeMarks };
+  }
+
   function move(dir) {
     if (animating || over) return;
     if (won && !keepPlaying) return;
 
-    // Snapshot previous occupancy as list of values with positions for animation planning
-    const prev = tiles.map((t) => ({ ...t }));
     const prevGrid = grid.map((row) => row.slice());
-
     const v = vectors(dir);
     let anyMoved = false;
     let gained = 0;
-    const mergeMarks = []; // positions that resulted from merge
 
     for (let i = 0; i < SIZE; i++) {
       const before = v.getLine(i);
@@ -285,22 +363,6 @@
       if (result.moved) anyMoved = true;
       gained += result.gained;
       v.setLine(i, result.line);
-      // mark merge cells: scan result line for merge values sequentially matching
-      // Better: re-simulate to find merge destinations
-      const filtered = before.filter((x) => x !== 0);
-      let idx = 0;
-      let outJ = 0;
-      while (idx < filtered.length) {
-        if (idx + 1 < filtered.length && filtered[idx] === filtered[idx + 1]) {
-          const pos = v.mapPos(i, outJ);
-          mergeMarks.push(`${pos.r},${pos.c}`);
-          idx += 2;
-          outJ += 1;
-        } else {
-          idx += 1;
-          outJ += 1;
-        }
-      }
     }
 
     if (!anyMoved) {
@@ -313,18 +375,75 @@
     if (gained) playTone(520 + Math.min(400, gained / 2), 0.05, "sine");
     else playTone(320, 0.03, "sine");
 
-    // Build movement plan: for each destination cell, find source tile(s)
-    // Strategy: greedy match from previous tiles along travel axis
-    animateTransition(prev, prevGrid, dir, new Set(mergeMarks), () => {
-      const spawned = spawnTile();
-      const spawnSet = new Set();
-      if (spawned) spawnSet.add(`${spawned.r},${spawned.c}`);
+    // Recompute plan from previous occupancy against the already-updated grid logic
+    // Restore prev grid briefly only for planning from current tiles[] which still
+    // reflect the old layout — planMoves uses tiles[], not grid.
+    const { moves, nextTiles, mergeMarks } = planMoves(dir);
+    // grid already holds the post-move values from slideLine above.
 
-      // Full rebuild with spawn + merge pop
-      rebuildFromGrid(spawnSet, new Set(mergeMarks));
+    const m = metrics();
+    document.documentElement.style.setProperty("--cell-size", `${m.cell}px`);
+
+    // Disable transition briefly? No — we want transition ON for the slide.
+    // Ensure tiles have transition, then update transforms.
+    for (const mv of moves) {
+      const el = tileNodes.get(mv.tile.id);
+      if (!el) continue;
+      el.style.transition = `transform ${MOVE_MS}ms ease-in-out`;
+      // Merging tiles that die go slightly under the survivor
+      if (mv.isSurvivor === false) el.style.zIndex = "2";
+      else if (mv.mergePartner) el.style.zIndex = "3";
+      applyTileGeometry(el, mv.toR, mv.toC, m);
+    }
+
+    setTimeout(() => {
+      // Remove non-survivor merge partners
+      for (const mv of moves) {
+        if (mv.isSurvivor === false) {
+          const el = tileNodes.get(mv.tile.id);
+          if (el) el.remove();
+          tileNodes.delete(mv.tile.id);
+        }
+      }
+
+      // Update survivors (value + pop) and refresh tiles list
+      tiles = [];
+      for (const t of nextTiles) {
+        tiles.push({ id: t.id, r: t.r, c: t.c, v: t.v });
+        const el = tileNodes.get(t.id);
+        if (!el) {
+          createTileEl(t, { pop: !!t.merged });
+          continue;
+        }
+        el.style.zIndex = "";
+        el.className = `tile ${valueClass(t.v)}`;
+        const num = el.querySelector(".num");
+        if (num) num.textContent = String(t.v);
+        applyTileGeometry(el, t.r, t.c, m);
+        if (t.merged) {
+          const inner = el.querySelector(".tile-inner");
+          if (inner) {
+            inner.classList.remove("spawn", "pop");
+            void inner.offsetWidth;
+            inner.classList.add("pop");
+            const clear = () => inner.classList.remove("pop");
+            inner.addEventListener("animationend", clear, { once: true });
+            setTimeout(clear, 220);
+          }
+        }
+      }
+
+      // Spawn new tile without wiping the board
+      const spawned = spawnTile();
+      if (spawned) {
+        const id = tileIdSeq++;
+        const tile = { id, r: spawned.r, c: spawned.c, v: spawned.v };
+        tiles.push(tile);
+        createTileEl(tile, { spawn: true });
+      }
+
       animating = false;
 
-      // Win / lose checks
       let hit2048 = false;
       for (let r = 0; r < SIZE; r++) {
         for (let c = 0; c < SIZE; c++) {
@@ -336,82 +455,7 @@
         return;
       }
       if (!canMove()) showGameOver();
-    });
-  }
-
-  function animateTransition(prevTiles, prevGrid, dir, mergeSet, done) {
-    // Clear DOM and recreate previous tiles at old positions, then transition to new
-    tilesEl.innerHTML = "";
-    tileNodes.clear();
-
-    // Assign each prev tile a destination by simulating classic 2048 traversal
-    const assignments = planMoves(prevGrid, dir);
-
-    const live = [];
-    for (const a of assignments) {
-      const el = document.createElement("div");
-      const cls = a.v >= 65536 ? "v65536" : `v${a.v}`;
-      el.className = `tile ${cls}`;
-      const num = document.createElement("span");
-      num.className = "num";
-      num.textContent = String(a.v);
-      el.appendChild(num);
-      tilesEl.appendChild(el);
-
-      const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--gap")) || 12;
-      const boardW = boardEl.clientWidth - gap * 2;
-      const cell = (boardW - gap * (SIZE - 1)) / SIZE;
-      el.style.width = `${cell}px`;
-      el.style.height = `${cell}px`;
-      el.style.transform = `translate(${a.fromC * (cell + gap)}px, ${a.fromR * (cell + gap)}px)`;
-      live.push({ el, a, cell, gap });
-    }
-
-    // Force layout then move
-    void tilesEl.offsetWidth;
-    for (const item of live) {
-      const { el, a, cell, gap } = item;
-      el.style.transform = `translate(${a.toC * (cell + gap)}px, ${a.toR * (cell + gap)}px)`;
-    }
-
-    setTimeout(done, MOVE_MS + 16);
-  }
-
-  function planMoves(prevGrid, dir) {
-    // Recreate slide per line while tracking source cells for each output slot.
-    const result = [];
-    const meta = vectors(dir);
-
-    for (let i = 0; i < SIZE; i++) {
-      // Collect source positions along the line (in travel-toward-start order)
-      const sources = [];
-      for (let j = 0; j < SIZE; j++) {
-        const p = meta.mapPos(i, j);
-        const val = prevGrid[p.r][p.c];
-        if (val) sources.push({ r: p.r, c: p.c, v: val });
-      }
-
-      let idx = 0;
-      let outJ = 0;
-      while (idx < sources.length) {
-        const a = sources[idx];
-        if (idx + 1 < sources.length && sources[idx + 1].v === a.v) {
-          const b = sources[idx + 1];
-          const dest = meta.mapPos(i, outJ);
-          // Both tiles move to dest (merge); keep both for animation
-          result.push({ fromR: a.r, fromC: a.c, toR: dest.r, toC: dest.c, v: a.v, merge: true });
-          result.push({ fromR: b.r, fromC: b.c, toR: dest.r, toC: dest.c, v: b.v, merge: true });
-          idx += 2;
-          outJ += 1;
-        } else {
-          const dest = meta.mapPos(i, outJ);
-          result.push({ fromR: a.r, fromC: a.c, toR: dest.r, toC: dest.c, v: a.v, merge: false });
-          idx += 1;
-          outJ += 1;
-        }
-      }
-    }
-    return result;
+    }, MOVE_MS + 12);
   }
 
   function newGame() {
@@ -436,9 +480,10 @@
     }
     rebuildFromGrid(spawnSet, new Set());
     playTone(640, 0.05, "triangle");
+    boardEl.focus({ preventScroll: true });
   }
 
-  // Input
+  // Keyboard: arrows + WASD. Also accept e.code for layout-independent WASD.
   const keyMap = {
     ArrowLeft: "left",
     ArrowRight: "right",
@@ -453,13 +498,35 @@
     W: "up",
     S: "down",
   };
+  const codeMap = {
+    ArrowLeft: "left",
+    ArrowRight: "right",
+    ArrowUp: "up",
+    ArrowDown: "down",
+    KeyA: "left",
+    KeyD: "right",
+    KeyW: "up",
+    KeyS: "down",
+  };
 
-  window.addEventListener("keydown", (e) => {
-    const dir = keyMap[e.key];
-    if (!dir) return;
-    e.preventDefault();
-    move(dir);
-  });
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // Don't steal typing from inputs
+      const tag = (e.target && e.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
+
+      const dir = keyMap[e.key] || codeMap[e.code];
+      if (!dir) return;
+      e.preventDefault(); // stop page scroll on arrows
+      move(dir);
+    },
+    { passive: false }
+  );
+
+  // Make board focusable so users can click it; keys work globally anyway.
+  boardEl.tabIndex = 0;
 
   let touchStart = null;
   boardEl.addEventListener(
@@ -467,7 +534,7 @@
     (e) => {
       if (e.touches.length !== 1) return;
       const t = e.touches[0];
-      touchStart = { x: t.clientX, y: t.clientY, t: Date.now() };
+      touchStart = { x: t.clientX, y: t.clientY };
     },
     { passive: true }
   );
@@ -500,23 +567,23 @@
   btnContinue.addEventListener("click", () => {
     keepPlaying = true;
     hideOverlay();
+    boardEl.focus({ preventScroll: true });
   });
 
   window.addEventListener("resize", () => {
-    // Reposition existing tiles with updated cell size
-    const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--gap")) || 12;
-    const boardW = boardEl.clientWidth - gap * 2;
-    const cell = (boardW - gap * (SIZE - 1)) / SIZE;
-    document.documentElement.style.setProperty("--cell-size", `${cell}px`);
+    const m = metrics();
+    document.documentElement.style.setProperty("--cell-size", `${m.cell}px`);
     for (const t of tiles) {
       const el = tileNodes.get(t.id);
       if (!el) continue;
-      el.style.width = `${cell}px`;
-      el.style.height = `${cell}px`;
-      el.style.transform = `translate(${t.c * (cell + gap)}px, ${t.r * (cell + gap)}px)`;
+      // Skip transition on resize to avoid sliding tiles during layout change
+      const prev = el.style.transition;
+      el.style.transition = "none";
+      applyTileGeometry(el, t.r, t.c, m);
+      void el.offsetWidth;
+      el.style.transition = prev || "";
     }
   });
 
-  // Boot
   newGame();
 })();

@@ -187,6 +187,11 @@ body {
   justify-content: center;
   perspective: 900px;
 }
+.board:focus { outline: none; }
+.board:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.55);
+  outline-offset: 3px;
+}
 .board {
   position: relative;
   width: var(--board);
@@ -223,8 +228,20 @@ body {
 }
 .tile {
   position: absolute;
+  left: 0;
+  top: 0;
   width: var(--cell-size);
   height: var(--cell-size);
+  /* Positioning shell only — visuals live on .tile-inner so scale anims don't fight translate */
+  background: transparent;
+  box-shadow: none;
+  transition: transform 150ms ease-in-out;
+  will-change: transform;
+  z-index: 2;
+}
+.tile-inner {
+  width: 100%;
+  height: 100%;
   border-radius: 12px;
   display: flex;
   align-items: center;
@@ -232,9 +249,6 @@ body {
   font-family: var(--font-display);
   font-weight: 800;
   color: #fff;
-  transition: transform 140ms ease-in-out;
-  will-change: transform;
-  z-index: 2;
   box-shadow:
     0 8px 18px rgba(0,0,0,0.28),
     inset 0 1px 0 rgba(255,255,255,0.25);
@@ -252,39 +266,39 @@ body {
 .tile.v4096 .num,
 .tile.v8192 .num { font-size: clamp(14px, 5.4vw, 24px); }
 
-.tile.pop { animation: pop 180ms ease-out; }
-.tile.spawn { animation: spawn 180ms ease-out; }
-@keyframes pop {
+.tile-inner.pop { animation: popInner 180ms ease-out; }
+.tile-inner.spawn { animation: spawnInner 180ms ease-out; }
+@keyframes popInner {
   0% { transform: scale(0.86); }
   60% { transform: scale(1.08); }
   100% { transform: scale(1); }
 }
-@keyframes spawn {
+@keyframes spawnInner {
   0% { transform: scale(0.2); opacity: 0; }
   100% { transform: scale(1); opacity: 1; }
 }
 
-/* Tile neon palette */
-.tile.v2    { background: linear-gradient(145deg, #334155, #1e293b); color: #e2e8f0; }
-.tile.v4    { background: linear-gradient(145deg, #475569, #334155); color: #f8fafc; }
-.tile.v8    { background: linear-gradient(145deg, #fb923c, #ea580c); box-shadow: 0 0 22px rgba(249,115,22,0.35), inset 0 1px 0 rgba(255,255,255,0.25); }
-.tile.v16   { background: linear-gradient(145deg, #f97316, #c2410c); box-shadow: 0 0 24px rgba(249,115,22,0.4), inset 0 1px 0 rgba(255,255,255,0.25); }
-.tile.v32   { background: linear-gradient(145deg, #f43f5e, #be123c); box-shadow: 0 0 26px rgba(244,63,94,0.42), inset 0 1px 0 rgba(255,255,255,0.25); }
-.tile.v64   { background: linear-gradient(145deg, #ec4899, #be185d); box-shadow: 0 0 28px rgba(236,72,153,0.45), inset 0 1px 0 rgba(255,255,255,0.25); }
-.tile.v128  { background: linear-gradient(145deg, #a78bfa, #7c3aed); box-shadow: 0 0 30px rgba(167,139,250,0.5), inset 0 1px 0 rgba(255,255,255,0.28); }
-.tile.v256  { background: linear-gradient(145deg, #818cf8, #4f46e5); box-shadow: 0 0 32px rgba(129,140,248,0.52), inset 0 1px 0 rgba(255,255,255,0.28); }
-.tile.v512  { background: linear-gradient(145deg, #38bdf8, #0284c7); box-shadow: 0 0 34px rgba(56,189,248,0.55), inset 0 1px 0 rgba(255,255,255,0.3); }
-.tile.v1024 { background: linear-gradient(145deg, #22d3ee, #0891b2); box-shadow: 0 0 36px rgba(34,211,238,0.58), inset 0 1px 0 rgba(255,255,255,0.3); }
-.tile.v2048 {
+/* Tile neon palette — applied to inner face */
+.tile.v2 .tile-inner    { background: linear-gradient(145deg, #334155, #1e293b); color: #e2e8f0; }
+.tile.v4 .tile-inner    { background: linear-gradient(145deg, #475569, #334155); color: #f8fafc; }
+.tile.v8 .tile-inner    { background: linear-gradient(145deg, #fb923c, #ea580c); box-shadow: 0 0 22px rgba(249,115,22,0.35), inset 0 1px 0 rgba(255,255,255,0.25); }
+.tile.v16 .tile-inner   { background: linear-gradient(145deg, #f97316, #c2410c); box-shadow: 0 0 24px rgba(249,115,22,0.4), inset 0 1px 0 rgba(255,255,255,0.25); }
+.tile.v32 .tile-inner   { background: linear-gradient(145deg, #f43f5e, #be123c); box-shadow: 0 0 26px rgba(244,63,94,0.42), inset 0 1px 0 rgba(255,255,255,0.25); }
+.tile.v64 .tile-inner   { background: linear-gradient(145deg, #ec4899, #be185d); box-shadow: 0 0 28px rgba(236,72,153,0.45), inset 0 1px 0 rgba(255,255,255,0.25); }
+.tile.v128 .tile-inner  { background: linear-gradient(145deg, #a78bfa, #7c3aed); box-shadow: 0 0 30px rgba(167,139,250,0.5), inset 0 1px 0 rgba(255,255,255,0.28); }
+.tile.v256 .tile-inner  { background: linear-gradient(145deg, #818cf8, #4f46e5); box-shadow: 0 0 32px rgba(129,140,248,0.52), inset 0 1px 0 rgba(255,255,255,0.28); }
+.tile.v512 .tile-inner  { background: linear-gradient(145deg, #38bdf8, #0284c7); box-shadow: 0 0 34px rgba(56,189,248,0.55), inset 0 1px 0 rgba(255,255,255,0.3); }
+.tile.v1024 .tile-inner { background: linear-gradient(145deg, #22d3ee, #0891b2); box-shadow: 0 0 36px rgba(34,211,238,0.58), inset 0 1px 0 rgba(255,255,255,0.3); }
+.tile.v2048 .tile-inner {
   background: linear-gradient(145deg, #fde047, #f59e0b 55%, #f472b6);
   color: #1a1020;
   box-shadow: 0 0 42px rgba(251,191,36,0.65), 0 0 80px rgba(244,114,182,0.25), inset 0 1px 0 rgba(255,255,255,0.45);
 }
-.tile.v4096,
-.tile.v8192,
-.tile.v16384,
-.tile.v32768,
-.tile.v65536 {
+.tile.v4096 .tile-inner,
+.tile.v8192 .tile-inner,
+.tile.v16384 .tile-inner,
+.tile.v32768 .tile-inner,
+.tile.v65536 .tile-inner {
   background: linear-gradient(145deg, #fff7ad, #67e8f9 40%, #c084fc);
   color: #111827;
   box-shadow: 0 0 48px rgba(192,132,252,0.55), inset 0 1px 0 rgba(255,255,255,0.5);
